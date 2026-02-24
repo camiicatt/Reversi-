@@ -1,5 +1,5 @@
 #Zijie Zhang, Sep.24/2023
-
+#comment
 import numpy as np
 import socket, pickle
 from reversi import reversi
