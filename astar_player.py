@@ -1,4 +1,4 @@
-# LET HIM COOOKKK OMGGG, looks reallt bad at first but it picks up i swear 
+# LET IT COOOKKK OMGGG, looks reallt bad at first but it picks up i swear 
 
 # win to loose 1:0 
 
