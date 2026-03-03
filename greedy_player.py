@@ -25,7 +25,6 @@ def main():
         #Debug info
         print(turn)
         print(board)
-
         #Local Greedy - Replace with your algorithm
         x = -1
         y = -1
@@ -37,7 +36,6 @@ def main():
                 if cur > max:
                     max = cur
                     x, y = i, j
-
         #Send your move to the server. Send (x,y) = (-1,-1) to tell the server you have no hand to play
         game_socket.send(pickle.dumps([x,y]))
         
