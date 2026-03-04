@@ -1,5 +1,6 @@
 #Zijie Zhang, Sep.24/2023
 #comment
+import reversi_server
 import numpy as np
 import socket, pickle
 from reversi import reversi
@@ -7,6 +8,7 @@ import math
 
 def evaluate(board,prev_turn):
     return np.sum(board == prev_turn) - np.sum(board == -prev_turn)
+
 def alpha_beta(board, depth, alpha, beta, current_turn, root_turn):
 
     game = reversi()
@@ -17,7 +19,10 @@ def alpha_beta(board, depth, alpha, beta, current_turn, root_turn):
         for j in range(8):
             if game.step(i, j, current_turn, False) > 0:
                 legal_moves.append((i, j))
-
+    legal_moves.sort(
+        key=lambda move: game.step(move[0], move[1], current_turn, False),
+        reverse=True
+    )
     if depth == 0 or not legal_moves:
         return evaluate(board, root_turn)
 
@@ -118,7 +123,7 @@ def main():
         if not legal_moves:
             x,y = -1,-1
         else:
-            depth = 3
+            depth = 4
             alpha = float("-inf")
             beta = float("inf")
             optimal_value = float("-inf")
