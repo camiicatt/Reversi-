@@ -80,38 +80,163 @@ def choose_move(model, board, turn):
     return x, y, log_probability, board_value
 
 
-def update_model_later():
+def update_model(optimizer, log_probs, values, final_reward, gamma=0.99):
     """
-    Write the reward/training code here.
+    Compute discounted returns from the terminal reward, then update
+    the actor (policy gradient) and critic (value regression) losses.
 
-    For now, this function does nothing.
+    Args:
+        optimizer:    torch optimizer for the ActorCritic model
+        log_probs:    list of log π(a|s) collected during the game
+        values:       list of V(s) tensors collected during the game
+        final_reward: +1 (win), -1 (loss), or 0 (draw)
+        gamma:        discount factor
     """
-    pass
+    if len(log_probs) == 0:
+        return 0.0  # no moves were made (edge case)
+
+    # Build discounted returns backwards from the terminal reward.
+    # Every move in the game contributed toward the final outcome,
+    # so earlier moves get a more heavily discounted version of it.
+    returns = []
+    R = final_reward
+    for _ in reversed(range(len(log_probs))):
+        R = gamma * R  # discount first so the final move gets gamma * reward
+        returns.insert(0, R)
+    # Give the last move the full reward signal
+    returns[-1] = final_reward
+
+    returns = torch.tensor(returns, dtype=torch.float32)
+
+    actor_loss = 0.0
+    critic_loss = 0.0
+
+    for log_prob, value, G in zip(log_probs, values, returns):
+        advantage = G - value.item()
+
+        # Policy gradient: push up probability of actions with positive advantage
+        actor_loss += -log_prob * advantage
+
+        # Value regression: critic should predict the discounted return
+        critic_loss += nn.functional.mse_loss(value.squeeze(), torch.tensor(G))
+
+    total_loss = actor_loss + 0.5 * critic_loss
+
+    optimizer.zero_grad()
+    total_loss.backward()
+    optimizer.step()
+
+    return total_loss.item()
 
 
-def main():
+def compute_reward(board, my_turn):
+    """
+    Determine the reward from the final board state.
+      +1  if we have more pieces
+      -1  if opponent has more pieces
+       0  if draw
+    """
+    my_pieces = np.sum(board == my_turn)
+    opp_pieces = np.sum(board == -my_turn)
+
+    if my_pieces > opp_pieces:
+        return 1.0
+    elif opp_pieces > my_pieces:
+        return -1.0
+    else:
+        return 0.0
+
+
+def play_one_game(model, optimizer, my_turn_side=None):
+    """
+    Connect to the server, play one full game, collect trajectory,
+    update the model at game end.
+
+    Returns (reward, loss) for logging.
+    """
     game_socket = socket.socket()
     game_socket.connect(("127.0.0.1", 33333))
 
-    model = ActorCritic()
+    log_probs = []
+    values = []
+    last_board = None
 
     while True:
         data = game_socket.recv(4096)
         turn, board = pickle.loads(data)
 
+        # Game over signal
         if turn == 0:
             game_socket.close()
-            return
+            break
 
-        print("Current turn:", turn)
-        print(board)
+        # Remember which side we are on (first turn tells us)
+        if my_turn_side is None:
+            my_turn_side = turn
+
+        last_board = board.copy()
 
         x, y, log_probability, board_value = choose_move(model, board, turn)
 
-        print("Chosen move:", x, y)
-        print("Critic board value:", board_value.item())
+        # Only collect gradients for moves we actually made
+        if turn == my_turn_side and log_probability is not None:
+            log_probs.append(log_probability)
+            values.append(board_value)
 
         game_socket.send(pickle.dumps([x, y]))
+
+    # Compute reward from final board
+    if last_board is not None:
+        reward = compute_reward(last_board, my_turn_side)
+    else:
+        reward = 0.0
+
+    # Update the model
+    loss = update_model(optimizer, log_probs, values, reward)
+
+    return reward, loss
+
+
+def main():
+    num_games = 500
+    save_interval = 50
+    lr = 1e-4
+
+    model = ActorCritic()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    # Try to load existing weights
+    try:
+        model.load_state_dict(torch.load("data/actor_critic.pth", weights_only=True))
+        print("Loaded existing model weights from data/actor_critic.pth")
+    except FileNotFoundError:
+        print("No existing weights found — starting fresh.")
+
+    wins, losses, draws = 0, 0, 0
+
+    for game_num in range(1, num_games + 1):
+        reward, loss = play_one_game(model, optimizer)
+
+        if reward > 0:
+            wins += 1
+        elif reward < 0:
+            losses += 1
+        else:
+            draws += 1
+
+        print(f"Game {game_num}/{num_games}  |  "
+              f"Reward: {reward:+.0f}  |  Loss: {loss:.4f}  |  "
+              f"Record: {wins}W-{losses}L-{draws}D")
+
+        # Periodically save weights
+        if game_num % save_interval == 0:
+            torch.save(model.state_dict(), "data/actor_critic.pth")
+            print(f"  → Saved model weights (game {game_num})")
+
+    # Final save
+    torch.save(model.state_dict(), "data/actor_critic.pth")
+    print(f"\nTraining complete. Final record: {wins}W-{losses}L-{draws}D")
+    print("Weights saved to data/actor_critic.pth")
 
 
 if __name__ == "__main__":
