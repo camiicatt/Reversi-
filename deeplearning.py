@@ -1,8 +1,7 @@
-import socket
-import pickle
 import numpy as np
 import torch
 import torch.nn as nn
+import random
 
 from reversi import reversi
 
@@ -82,9 +81,6 @@ def choose_move(model, board, turn):
 
 def update_model(optimizer, log_probs, values, final_reward, gamma=0.99):
     """
-    Compute discounted returns from the terminal reward, then update
-    the actor (policy gradient) and critic (value regression) losses.
-
     Args:
         optimizer:    torch optimizer for the ActorCritic model
         log_probs:    list of log π(a|s) collected during the game
@@ -96,8 +92,6 @@ def update_model(optimizer, log_probs, values, final_reward, gamma=0.99):
         return 0.0  # no moves were made (edge case)
 
     # Build discounted returns backwards from the terminal reward.
-    # Every move in the game contributed toward the final outcome,
-    # so earlier moves get a more heavily discounted version of it.
     returns = []
     R = final_reward
     for _ in reversed(range(len(log_probs))):
@@ -149,49 +143,52 @@ def compute_reward(board, my_turn):
 
 def play_one_game(model, optimizer, my_turn_side=None):
     """
-    Connect to the server, play one full game, collect trajectory,
-    update the model at game end.
+    Play one full game locally against a random opponent, collect trajectory,
+    and update the model at game end.
 
     Returns (reward, loss) for logging.
     """
-    game_socket = socket.socket()
-    game_socket.connect(("127.0.0.1", 33333))
+    if my_turn_side is None:
+        my_turn_side = random.choice([1, -1])
 
+    game = reversi()
     log_probs = []
     values = []
-    last_board = None
+
+    consecutive_passes = 0
 
     while True:
-        data = game_socket.recv(4096)
-        turn, board = pickle.loads(data)
-
-        # Game over signal
-        if turn == 0:
-            game_socket.close()
+        # Check if game is over (two passes in a row or board is full)
+        if consecutive_passes >= 2 or np.count_nonzero(game.board == 0) == 0:
             break
 
-        # Remember which side we are on (first turn tells us)
-        if my_turn_side is None:
-            my_turn_side = turn
+        legal_moves = get_legal_moves(game.board, game.turn)
 
-        last_board = board.copy()
+        if len(legal_moves) == 0:
+            # Pass turn
+            consecutive_passes += 1
+            game.turn = -game.turn
+            continue
 
-        x, y, log_probability, board_value = choose_move(model, board, turn)
+        consecutive_passes = 0
 
-        # Only collect gradients for moves we actually made
-        if turn == my_turn_side and log_probability is not None:
-            log_probs.append(log_probability)
-            values.append(board_value)
+        if game.turn == my_turn_side:
+            # Model's turn
+            x, y, log_probability, board_value = choose_move(model, game.board, game.turn)
+            
+            if log_probability is not None:
+                log_probs.append(log_probability)
+                values.append(board_value)
+                
+            game.step(x, y, game.turn)
+            game.turn = -game.turn
+        else:
+            # Opponent's turn (Random Agent)
+            x, y = random.choice(legal_moves)
+            game.step(x, y, game.turn)
+            game.turn = -game.turn
 
-        game_socket.send(pickle.dumps([x, y]))
-
-    # Compute reward from final board
-    if last_board is not None:
-        reward = compute_reward(last_board, my_turn_side)
-    else:
-        reward = 0.0
-
-    # Update the model
+    reward = compute_reward(game.board, my_turn_side)
     loss = update_model(optimizer, log_probs, values, reward)
 
     return reward, loss
